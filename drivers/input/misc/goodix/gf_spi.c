@@ -909,9 +909,11 @@ static int __init gf_init(void)
 	}
 
 	if (driver_init_partial(&gf) < 0) {
-		msleep(30);
+		msleep(40);
+		mutex_lock(&device_list_lock);
 		class_destroy(gf_class);
 //		unregister_chrdev(SPIDEV_MAJOR, gf_driver.driver.name);
+		mutex_unlock(&device_list_lock);
 		pr_warn("Failed driver_init_partial. REMOVE GOODIX\n");
 	}
 
