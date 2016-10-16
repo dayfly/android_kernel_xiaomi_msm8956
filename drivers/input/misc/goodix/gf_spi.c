@@ -108,9 +108,8 @@ static void gf_enable_irq(struct gf_dev *gf_dev)
 	if (gf_dev->irq_enabled) {
 		pr_warn("IRQ has been enabled.\n");
 	} else {
-		pr_warn("GOODIX enable_irq0 %i\n", gf_dev->irq);
+		pr_warn("GOODIX enable_irq %i\n", gf_dev->irq);
 		enable_irq(gf_dev->irq);
-		pr_warn("GOODIX enable_irq1 %i\n", gf_dev->irq);
 		gf_dev->irq_enabled = 1;
 	}
 }
@@ -266,17 +265,19 @@ static int gfspi_ioctl_clk_uninit(struct gf_dev *data)
 }
 #endif
 
+int recurs = 0;
+
 static long gf_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	struct gf_dev *gf_dev = &gf;
 	struct gf_key gf_key = { 0 };
 	int retval = 0;
 	int i;
+	long rc;
 #ifdef AP_CONTROL_CLK
 	unsigned int speed = 0;
 #endif
-
-	pr_warn("GOODIX gf_ioctl start %i\n", cmd);
+	pr_info("%s: enter\n", __func__);
 
 	if (_IOC_TYPE(cmd) != GF_IOC_MAGIC) {
 		return -ENODEV;
@@ -291,15 +292,24 @@ static long gf_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		return -EFAULT;
 	}
 
+recurs_l:
 	if (gf_dev->device_available == 0) {
 		if ((cmd == GF_IOC_POWER_ON) || (cmd == GF_IOC_POWER_OFF) || (cmd == GF_IOC_ENABLE_GPIO) || (cmd == GF_IOC_DISABLE_GPIO)) {
 			pr_info("power cmd\n");
 		} else{
+			if (recurs == 0) {
+				recurs = 1;
+				rc = gf_ioctl(filp, GF_IOC_ENABLE_GPIO, cmd);
+				pr_warn("GOODIX gf_ioctl recur GF_ENABLE_GPIO %i %li\n", GF_IOC_ENABLE_GPIO, rc);
+				rc = gf_ioctl(filp, GF_IOC_POWER_ON, cmd);
+				pr_warn("GOODIX gf_ioctl recur GF_POWER_ON %i %li\n", GF_IOC_POWER_ON, rc);
+				recurs = 0;
+				goto recurs_l;
+			}
 			pr_info("Sensor is power off currently. \n");
 			return -ENODEV;
 		}
 	}
-	pr_warn("GOODIX gf_ioctl switch\n");
 
 	switch (cmd) {
 	case GF_IOC_DISABLE_IRQ:
@@ -439,7 +449,6 @@ static int goodix_fb_state_chg_callback(struct notifier_block *nb,
 	struct fb_event *evdata = data;
 	unsigned int blank;
 
-	pr_info("%s: enter\n", __func__);
 	if (val != FB_EARLY_EVENT_BLANK)
 		return 0;
 	pr_info("[info] %s go to the goodix_fb_state_chg_callback value = %d\n",
@@ -528,8 +537,9 @@ static int driver_init_partial(struct gf_dev *gf_dev)
 	}
 	gpio_direction_input(gf_dev->irq_gpio);
 
-	gf_dev->irq = gf_irq_num(gf_dev);
 
+	gf_dev->irq = gf_irq_num(gf_dev);
+	pr_info("gf:irq:%d\n", gf_dev->irq);
 #if 1
 	ret = request_threaded_irq(gf_dev->irq, NULL, gf_irq,
 			IRQF_TRIGGER_RISING | IRQF_ONESHOT,
@@ -541,6 +551,7 @@ static int driver_init_partial(struct gf_dev *gf_dev)
 #endif
 	if (!ret) {
 		enable_irq_wake(gf_dev->irq);
+//		gf_dev->irq_enabled = 1;
 		gf_disable_irq(gf_dev);
 	}
 
@@ -577,7 +588,6 @@ static int gf_open(struct inode *inode, struct file *filp)
 	struct gf_dev *gf_dev;
 	int status = -ENXIO;
 
-	pr_info("%s: enter\n", __func__);
 	FUNC_ENTRY();
 	mutex_lock(&device_list_lock);
 
@@ -611,7 +621,6 @@ static int gf_fasync(int fd, struct file *filp, int mode)
 	struct gf_dev *gf_dev = filp->private_data;
 	int ret;
 
-	pr_info("%s: enter\n", __func__);
 	FUNC_ENTRY();
 	ret = fasync_helper(fd, filp, mode, &gf_dev->async);
 	FUNC_EXIT();
@@ -625,7 +634,6 @@ static int gf_release(struct inode *inode, struct file *filp)
 	struct gf_dev *gf_dev;
 	int status = 0;
 
-	pr_info("%s: enter\n", __func__);
 	FUNC_ENTRY();
 	mutex_lock(&device_list_lock);
 	gf_dev = filp->private_data;
@@ -702,7 +710,6 @@ static int gf_probe(struct platform_device *pdev)
 	int ret;
 	struct regulator *vreg;
 #endif
-	pr_info("%s: enter\n", __func__);
 	FUNC_ENTRY();
 
 	/* Initialize the driver data */
@@ -769,6 +776,7 @@ static int gf_probe(struct platform_device *pdev)
 		gf_reg_key_kernel(gf_dev);
 	}
 
+	FUNC_EXIT();
 	return status;
 
 error:
@@ -803,7 +811,6 @@ static int gf_remove(struct platform_device *pdev)
 {
 	struct gf_dev *gf_dev = &gf;
 	FUNC_ENTRY();
-	pr_info("%s: enter\n", __func__);
 
 	/* make sure ops on existing fds can abort cleanly */
 	if (gf_dev->irq) {
@@ -873,12 +880,19 @@ static struct spi_driver gf_driver = {
 		.resume = gf_resume,
 	};
 
+extern int fingerprint_fpc1020_init;
+
 static int __init gf_init(void)
 {
 	int status;
 	FUNC_ENTRY();
 
 	pr_info("%s: enter\n", __func__);
+	if (fingerprint_fpc1020_init == 1) {
+		pr_info("FPC1020 driver init. remove GOODIX.\n");
+		return -ENODEV;
+	}
+
 	/* Claim our 256 reserved device numbers.  Then register a class
 	 * that will key udev/mdev to add/remove /dev nodes.  Last, register
 	 * the driver which manages those device numbers.
@@ -906,15 +920,6 @@ static int __init gf_init(void)
 		class_destroy(gf_class);
 		unregister_chrdev(SPIDEV_MAJOR, gf_driver.driver.name);
 		pr_warn("Failed to register SPI driver.\n");
-	}
-
-	if (driver_init_partial(&gf) < 0) {
-		msleep(40);
-		mutex_lock(&device_list_lock);
-		class_destroy(gf_class);
-//		unregister_chrdev(SPIDEV_MAJOR, gf_driver.driver.name);
-		mutex_unlock(&device_list_lock);
-		pr_warn("Failed driver_init_partial. REMOVE GOODIX\n");
 	}
 
 	pr_info(" status = 0x%x\n", status);
